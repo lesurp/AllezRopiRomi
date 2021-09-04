@@ -2,14 +2,14 @@ mod agent;
 mod consts;
 mod renderer;
 
-use std::sync::RwLock;
 use std::sync::Arc;
+use std::sync::RwLock;
 
+use agent::SystemManager;
 use agent::{Agent, Cell, Grid, Kinematics};
 use consts::*;
 use nalgebra::Vector2;
 use renderer::Renderer;
-
 
 fn init_grid() -> Grid {
     let height = GRID_SPLIT as usize;
@@ -29,7 +29,7 @@ fn init_grid() -> Grid {
     Grid { cells, width }
 }
 
-fn init_agents() -> Vec<Agent> {
+fn init_agent_kinematics() -> Vec<Kinematics> {
     let mut out = Vec::new();
     for i in 0..2 {
         for j in 0..2 {
@@ -44,20 +44,37 @@ fn init_agents() -> Vec<Agent> {
                 theta: j as f32 * std::f32::consts::PI,
                 radius: 10.0,
             };
-            let agent = Agent { id, kinematics: RwLock::new(kinematics), mission: RwLock::new(None) };
-            out.push(agent)
+            out.push(kinematics)
         }
     }
     out
 }
 
 fn main() {
-    let grid = init_grid();
+    let grid = Arc::new(init_grid());
     let mut renderer = Renderer::new(&grid);
-    let agents = Arc::new(init_agents());
+    let agent_kinematics = init_agent_kinematics();
+
+    let mut system = SystemManager::new();
+    let mut agents = Vec::new();
+    let mut connection_handlers = Vec::new();
+    agent_kinematics.into_iter().for_each(|agent_kinematic| {
+        let (a, ch) = system.add_agent(agent_kinematic);
+        agents.push(Arc::new(a));
+        connection_handlers.push(ch);
+    });
+
+    let mut m: agent::MotionSimulator<u64> = agent::MotionSimulator::new();
+
     for agent in agents.iter() {
-        renderer.add_agent(agent.id, &agent.kinematics.read().unwrap())
+        renderer.add_agent(Arc::clone(agent));
+        m.add_agent(Arc::clone(agent));
     }
-    let m : agent::MotionSimulator<u64> = agent::MotionSimulator::spawn(agents.clone());
-    renderer.run(agents);
+
+    let _system_thread = std::thread::spawn(move || system.run());
+    for (a, mut ch) in agents.into_iter().zip(connection_handlers) {
+            let g = Arc::clone(&grid);
+            std::thread::spawn(move || a.run(&mut ch, g));
+    }
+    renderer.run();
 }

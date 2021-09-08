@@ -1,9 +1,9 @@
 mod agent;
 mod consts;
+mod motion;
 mod renderer;
 
 use std::sync::Arc;
-use std::sync::RwLock;
 
 use agent::SystemManager;
 use agent::{Agent, Cell, Grid, Kinematics};
@@ -35,8 +35,8 @@ fn init_agent_kinematics() -> Vec<Kinematics> {
         for j in 0..2 {
             let id = i * 2 + j;
             let kinematics = Kinematics {
-                v: Vector2::new(20.0, 50.0),
-                a: Vector2::new(0.0, 0.0),
+                v: Vector2::zeros(),
+                a: Vector2::zeros(),
                 p: Vector2::new(
                     (j + 1) as f32 * GRID_SIZE / 3.0 - GRID_HALF_SIZE,
                     (i + 1) as f32 * GRID_SIZE / 3.0 - GRID_HALF_SIZE,
@@ -51,6 +51,7 @@ fn init_agent_kinematics() -> Vec<Kinematics> {
 }
 
 fn main() {
+    env_logger::init();
     let grid = Arc::new(init_grid());
     let mut renderer = Renderer::new(&grid);
     let agent_kinematics = init_agent_kinematics();
@@ -64,7 +65,7 @@ fn main() {
         connection_handlers.push(ch);
     });
 
-    let mut m: agent::MotionSimulator<u64> = agent::MotionSimulator::new();
+    let mut m = motion::MotionSimulator::new();
 
     for agent in agents.iter() {
         renderer.add_agent(Arc::clone(agent));
@@ -73,8 +74,10 @@ fn main() {
 
     let _system_thread = std::thread::spawn(move || system.run());
     for (a, mut ch) in agents.into_iter().zip(connection_handlers) {
-            let g = Arc::clone(&grid);
-            std::thread::spawn(move || a.run(&mut ch, g));
+        let g = Arc::clone(&grid);
+        std::thread::spawn(move || a.run(&mut ch, g));
     }
     renderer.run();
+
+    m.stop();
 }

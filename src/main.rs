@@ -1,12 +1,14 @@
 mod agent;
 mod consts;
+mod missions;
 mod motion;
 mod renderer;
+mod system;
 
 use std::sync::Arc;
 
-use agent::SystemManager;
-use agent::{Agent, Cell, Grid, Kinematics};
+use system::SystemManager;
+use agent::{Cell, Grid, Kinematics};
 use consts::*;
 use nalgebra::Vector2;
 use renderer::Renderer;

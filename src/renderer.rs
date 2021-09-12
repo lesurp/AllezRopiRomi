@@ -1,5 +1,6 @@
-use crate::agent::{Agent, Cell, Grid, Kinematics, Mission};
+use crate::agent::{Agent, Cell, Grid, Kinematics};
 use crate::consts::*;
+use crate::missions::Mission;
 use kiss3d::event::Action;
 use kiss3d::{scene::PlanarSceneNode, window::Window};
 use nalgebra::{Matrix2x1, Point2, Translation2, UnitComplex};
@@ -8,8 +9,6 @@ use std::f32::consts::FRAC_1_SQRT_2;
 use std::f32::consts::FRAC_PI_2;
 use std::sync::Arc;
 use std::sync::Mutex;
-
-use crate::consts::*;
 
 struct TargetNode {
     target_cross: PlanarSceneNode,
@@ -45,7 +44,7 @@ pub struct Renderer {
     window: Window,
     agent_nodes: HashMap<usize, AgentNode>,
     agents: Mutex<Vec<Arc<Agent>>>,
-    config: Mutex<RendererConfig>
+    config: Mutex<RendererConfig>,
 }
 
 impl Renderer {
@@ -74,9 +73,7 @@ impl Renderer {
             ));
         }
 
-        let config = Mutex::new(RendererConfig {
-            with_target: true,
-        });
+        let config = Mutex::new(RendererConfig { with_target: true });
 
         Renderer {
             window,
@@ -95,15 +92,13 @@ impl Renderer {
         while self.window.render() {
             for mut event in self.window.events().iter() {
                 if let kiss3d::event::WindowEvent::Key(button, Action::Press, _) = event.value {
+                    event.inhibited = true;
                     match button {
                         kiss3d::event::Key::A => todo!(), // accel
                         kiss3d::event::Key::T => self.toggle_target(),
                         kiss3d::event::Key::V => todo!(), // velocity
-                        _ => {}
+                        _ => event.inhibited = false,
                     }
-                    println!("You pressed the button: {:?}", button);
-                    println!("Do not try to press escape: the event is inhibited!");
-                    event.inhibited = true // override the default keyboard handler
                 }
             }
             for agent in self.agents.lock().unwrap().iter() {
@@ -152,8 +147,14 @@ impl Renderer {
                 .target_line
                 .set_local_scale(1.0, delta.norm());
 
-            agent_node.to_target.target_line.set_visible(true && config.with_target);
-            agent_node.to_target.target_cross.set_visible(true && config.with_target);
+            agent_node
+                .to_target
+                .target_line
+                .set_visible(true && config.with_target);
+            agent_node
+                .to_target
+                .target_cross
+                .set_visible(true && config.with_target);
         } else {
             agent_node.to_target.target_line.set_visible(false);
             agent_node.to_target.target_cross.set_visible(false);
@@ -215,7 +216,12 @@ impl Renderer {
             accel,
             to_target,
         };
-        Renderer::update_agent(&mut agent_node, &agent.kinematics.read().unwrap(), &None, &self.config.lock().unwrap());
+        Renderer::update_agent(
+            &mut agent_node,
+            &agent.kinematics.read().unwrap(),
+            &None,
+            &self.config.lock().unwrap(),
+        );
         assert!(self.agent_nodes.insert(agent.id, agent_node).is_none());
         self.agents.lock().unwrap().push(agent);
     }

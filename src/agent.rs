@@ -1,171 +1,22 @@
+use crate::missions::*;
+use crate::system::*;
 use log::*;
 use nalgebra::Vector2;
-use rand::distributions::{Distribution, Uniform};
-use std::collections::HashMap;
-use std::fmt;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::RwLock;
-use std::sync::{Arc, Mutex};
-use std::thread::sleep_ms;
 use std::time::Duration;
-
-use crate::consts::{AGENT_RADIUS, CELL_SIZE, GRID_HALF_SIZE, GRID_SIZE};
-
-pub struct SystemManager {
-    connection_manager: ConnectionManager,
-    mission_manager: MissionManager,
-    id_counter: usize,
-}
-
-impl SystemManager {
-    pub fn new() -> Self {
-        SystemManager {
-            connection_manager: ConnectionManager::new(),
-            mission_manager: MissionManager::new(),
-            id_counter: 0,
-        }
-    }
-
-    pub fn add_agent(&mut self, kinematics: Kinematics) -> (Agent, ConnectionHandle) {
-        let connection_handle = self.connection_manager.create_new_handle();
-        self.id_counter += 1;
-        (
-            Agent {
-                id: self.id_counter,
-                kinematics: RwLock::new(kinematics),
-                mission: RwLock::new(None),
-            },
-            connection_handle,
-        )
-    }
-
-    pub fn run(mut self) -> ! {
-        loop {
-            let number_missions_left = self.mission_manager.number_missions_left();
-            debug!("Missions left in the pool: {}", number_missions_left);
-            if number_missions_left < 2 * self.id_counter {
-                info!("Creating new batch of missions");
-                let new_missions = self.mission_manager.create_new_missions(self.id_counter);
-                self.connection_manager.send_new_missions(new_missions);
-            }
-
-            sleep_ms(10);
-        }
-    }
-}
 
 pub enum Message {
     Mission(MissionMessage),
     Agent(AgentMessage),
 }
 
+#[derive(Clone, Debug)]
 pub struct AgentMessage {
-    id: usize,
+    pub id: usize,
     pub kinematics: Kinematics,
     pub mission: Option<Mission>,
-}
-
-pub struct ConnectionManager {
-    rx: Receiver<AgentMessage>,
-    tx: Sender<AgentMessage>,
-    txs: Vec<Sender<Message>>,
-}
-
-pub struct ConnectionHandle {
-    tx: Sender<AgentMessage>,
-    rx: Receiver<Message>,
-}
-
-impl ConnectionManager {
-    pub fn new() -> Self {
-        let (tx, rx) = channel();
-        ConnectionManager {
-            tx,
-            rx,
-            txs: Vec::new(),
-        }
-    }
-
-    pub fn create_new_handle(&mut self) -> ConnectionHandle {
-        let (tx, rx) = channel();
-        self.txs.push(tx);
-        ConnectionHandle {
-            tx: self.tx.clone(),
-            rx,
-        }
-    }
-
-    pub fn send_new_missions(&mut self, new_missions: Vec<Mission>) {
-        for tx in &self.txs {
-            tx.send(Message::Mission(MissionMessage(new_missions.clone()))).unwrap();
-        }
-    }
-}
-
-pub struct MissionMessage(Vec<Mission>);
-
-#[derive(Clone, Debug)]
-pub struct Mission {
-    pub id: usize,
-    pub agent: Option<usize>,
-    pub target: Vector2<f32>,
-}
-impl fmt::Display for Mission {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[id: {}, agent: {}, target: {}]",
-            self.id,
-            match self.agent {
-                Some(id) => id.to_string(),
-                None => "None".to_owned(),
-            },
-            self.target
-        )
-    }
-}
-
-pub struct MissionManager {
-    missions: HashMap<usize, Mission>,
-    id_counter: usize,
-}
-
-impl MissionManager {
-    pub fn new() -> Self {
-        MissionManager {
-            missions: HashMap::new(),
-            id_counter: 0,
-        }
-    }
-
-    pub fn create_new_missions(&mut self, n: usize) -> Vec<Mission> {
-        let mut out = Vec::new();
-        let between = Uniform::from(CELL_SIZE + AGENT_RADIUS / 2.0..GRID_SIZE - AGENT_RADIUS / 2.0 - CELL_SIZE);
-        let mut rng = rand::thread_rng();
-        for _i in 0..n {
-            let mission = Mission {
-                id: self.id_counter,
-                agent: None,
-                target: Vector2::new(
-                    between.sample(&mut rng) - GRID_HALF_SIZE,
-                    between.sample(&mut rng) - GRID_HALF_SIZE,
-                ),
-            };
-            info!("Mission created with target: {}", mission.target);
-            self.missions.insert(self.id_counter, mission.clone());
-            out.push(mission);
-            self.id_counter += 1;
-        }
-        out
-    }
-
-    pub fn finish_mission(&mut self, id: usize) {
-        self.missions.remove(&id);
-    }
-
-    pub fn number_missions_left(&self) -> usize {
-        self.missions.len()
-    }
 }
 
 pub struct Agent {
@@ -186,7 +37,7 @@ pub enum Cell {
     Crossable(f32),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Kinematics {
     pub p: Vector2<f32>,
     pub v: Vector2<f32>,
@@ -197,12 +48,21 @@ pub struct Kinematics {
 
 impl Agent {
     pub fn run(&self, connection_handle: &mut ConnectionHandle, _grid: Arc<Grid>) {
+        let mut agents = HashMap::new();
+        let mut missions = HashMap::new();
         loop {
             loop {
                 match connection_handle.rx.recv_timeout(Duration::from_millis(10)) {
                     Ok(message) => match message {
-                        Message::Mission(mission_message) => self.handle_mission(mission_message),
-                        Message::Agent(_agent_message) => todo!(),
+                        Message::Mission(mission_message) => {
+                            self.handle_mission(&mission_message, &agents);
+                            for m in mission_message.0 {
+                                missions.insert(m.id, m);
+                            }
+                        }
+                        Message::Agent(agent_message) => {
+                            agents.insert(agent_message.id, agent_message);
+                        }
                     },
                     Err(err) => match err {
                         std::sync::mpsc::RecvTimeoutError::Timeout => {
@@ -216,6 +76,8 @@ impl Agent {
                 }
             }
 
+            self.check_missions(connection_handle, &missions, &mut agents);
+
             if let Some(mission) = self.mission.read().unwrap().clone() {
                 let mut k = self.kinematics.read().unwrap().clone();
                 let dt = 1.0;
@@ -223,19 +85,35 @@ impl Agent {
                 k.a = a / 20.0;
                 debug!("Agent {}'s new acceleration is: {}", self.id, k.a);
                 *self.kinematics.write().unwrap() = k;
+            } else {
+                *self.kinematics.write().unwrap().a = *Vector2::zeros();
+                debug!("Agent {}'s new acceleration is null, because it has no associated mission", self.id);
             }
+
+            connection_handle
+                .tx
+                .send(AgentMessage {
+                    id: self.id,
+                    kinematics: self.kinematics.read().unwrap().clone(),
+                    mission: self.mission.read().unwrap().clone(),
+                })
+                .unwrap();
         }
     }
 
-    fn handle_mission(&self, mission_message: MissionMessage) {
+    fn handle_mission(
+        &self,
+        mission_message: &MissionMessage,
+        agents: &HashMap<usize, AgentMessage>,
+    ) {
         let mut best_dist = std::f32::MAX;
         let mut best_mission = None;
         let p = self.kinematics.read().unwrap().p;
-        for mission in mission_message.0 {
+        for mission in &mission_message.0 {
             let n = (p - mission.target).norm_squared();
             if n < best_dist {
                 best_dist = n;
-                best_mission = Some(mission)
+                best_mission = Some(mission.clone())
             }
         }
 
@@ -248,5 +126,60 @@ impl Agent {
             }
         }
         *self.mission.write().unwrap() = best_mission;
+    }
+
+    fn check_missions(
+        &self,
+        connection_handle: &mut ConnectionHandle,
+        missions: &HashMap<usize, Mission>,
+        agents: &mut HashMap<usize, AgentMessage>,
+    ) {
+        let k = self.kinematics.read().unwrap().clone();
+        let mut assigned_missions = HashSet::new();
+        if let Some(curr_m) = self.mission.read().unwrap().clone() {
+            let mut reassign = false;
+            for (_, a) in agents.iter_mut() {
+                match &a.mission {
+                    Some(m) => {
+                        assigned_missions.insert(m.id);
+                        if m.id == curr_m.id {
+                            let other_cost =
+                                (missions[&m.id].target - a.kinematics.p).norm_squared();
+                            let my_cost = (missions[&m.id].target - k.p).norm_squared();
+                            debug!(
+                                "Agents {} (cost {}) and {} (cost {}) work on the same mission {}",
+                                self.id, my_cost, a.id, other_cost, m.id
+                            );
+                            reassign = my_cost > other_cost;
+                            break;
+                        }
+                    }
+                    None => {}
+                }
+            }
+
+            if reassign {
+                let mut best_score = std::f32::MAX;
+                let mut best_mission = None;
+                for m in missions.values() {
+                    if assigned_missions.contains(&m.id) {
+                        continue;
+                    }
+
+                    let score = (k.p - m.target).norm_squared();
+                    if score < best_score {
+                        best_score = score;
+                        best_mission = Some(m.clone());
+                    }
+                }
+
+                match &best_mission {
+                    Some(bm) => debug!("Agent {} reassigned itself to {}", self.id, bm),
+                    None => debug!("Agent {} reassigned itself to no mission", self.id),
+                };
+                *self.mission.write().unwrap() = best_mission.clone();
+                agents.get_mut(&self.id).unwrap().mission = best_mission;
+            }
+        }
     }
 }

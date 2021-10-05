@@ -83,11 +83,15 @@ impl Agent {
                 let dt = 1.0;
                 let a = (2.0 / dt * (mission.target - k.p) - k.v) / dt;
                 k.a = a / 20.0;
+                debug!("Agent {}'s target is at {}", self.id, mission.target);
                 debug!("Agent {}'s new acceleration is: {}", self.id, k.a);
                 *self.kinematics.write().unwrap() = k;
             } else {
                 *self.kinematics.write().unwrap().a = *Vector2::zeros();
-                debug!("Agent {}'s new acceleration is null, because it has no associated mission", self.id);
+                debug!(
+                    "Agent {}'s new acceleration is null, because it has no associated mission",
+                    self.id
+                );
             }
 
             connection_handle
@@ -98,6 +102,8 @@ impl Agent {
                     mission: self.mission.read().unwrap().clone(),
                 })
                 .unwrap();
+
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
@@ -136,9 +142,16 @@ impl Agent {
     ) {
         let k = self.kinematics.read().unwrap().clone();
         let mut assigned_missions = HashSet::new();
-        if let Some(curr_m) = self.mission.read().unwrap().clone() {
+        let g = self.mission.read().unwrap();
+        let m = g.clone();
+        drop(g); // TODO: is there a better way to enforce the lock dtor?
+                 // e.g. some getter function? this is *very* bug-prone :(
+        if let Some(curr_m) = m {
             let mut reassign = false;
             for (_, a) in agents.iter_mut() {
+                if a.id == self.id {
+                    continue;
+                }
                 match &a.mission {
                     Some(m) => {
                         assigned_missions.insert(m.id);

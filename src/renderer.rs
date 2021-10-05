@@ -1,5 +1,7 @@
 use crate::agent::{Agent, Cell, Grid, Kinematics};
 use crate::consts::*;
+use std::time::Duration;
+use log::*;
 use crate::missions::Mission;
 use kiss3d::event::Action;
 use kiss3d::{scene::PlanarSceneNode, window::Window};
@@ -111,8 +113,12 @@ impl Renderer {
                             &self.config.lock().unwrap(),
                         )
                     }
+                    else {
+                        debug!("Agent has no mission ?");
+                    }
                 }
             }
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 

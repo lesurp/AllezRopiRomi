@@ -1,12 +1,15 @@
-use log::*;
 use crate::consts::{AGENT_RADIUS, CELL_SIZE, GRID_HALF_SIZE, GRID_SIZE};
+use log::*;
 use nalgebra::Vector2;
-use std::{collections::HashMap, fmt};
 use rand::distributions::{Distribution, Uniform};
+use rand_pcg::Pcg64;
+use std::{collections::HashMap, fmt};
 
 pub struct MissionManager {
     missions: HashMap<usize, Mission>,
     id_counter: usize,
+    rng: Pcg64,
+    between: Uniform<f32>,
 }
 
 impl MissionManager {
@@ -14,25 +17,28 @@ impl MissionManager {
         MissionManager {
             missions: HashMap::new(),
             id_counter: 0,
+            between: Uniform::from(
+                CELL_SIZE + AGENT_RADIUS / 2.0..GRID_SIZE - AGENT_RADIUS / 2.0 - CELL_SIZE,
+            ),
+            rng: rand_pcg::Pcg64::new(0, 0),
         }
     }
 
     pub fn create_new_missions(&mut self, n: usize) -> Vec<Mission> {
         let mut out = Vec::new();
-        let between = Uniform::from(
-            CELL_SIZE + AGENT_RADIUS / 2.0..GRID_SIZE - AGENT_RADIUS / 2.0 - CELL_SIZE,
-        );
-        let mut rng = rand_pcg::Pcg64::new(0, 0);
         for _i in 0..n {
             let mission = Mission {
                 id: self.id_counter,
                 agent: None,
                 target: Vector2::new(
-                    between.sample(&mut rng) - GRID_HALF_SIZE,
-                    between.sample(&mut rng) - GRID_HALF_SIZE,
+                    self.between.sample(&mut self.rng) - GRID_HALF_SIZE,
+                    self.between.sample(&mut self.rng) - GRID_HALF_SIZE,
                 ),
             };
-            info!("Mission created with target: {}", mission.target);
+            info!(
+                "Mission {} created with target: {}",
+                self.id_counter, mission.target
+            );
             self.missions.insert(self.id_counter, mission.clone());
             out.push(mission);
             self.id_counter += 1;
@@ -49,6 +55,7 @@ impl MissionManager {
     }
 }
 
+#[derive(Debug)]
 pub struct MissionMessage(pub Vec<Mission>);
 
 #[derive(Clone, Debug)]

@@ -12,7 +12,6 @@ use std::f32::consts::FRAC_PI_2;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
 
 struct TargetNode {
     target_cross: PlanarSceneNode,
@@ -216,8 +215,7 @@ impl Renderer {
         );
         let mut velocity = self.window.add_rectangle(LINE_WIDTH, 1.0);
         let mut accel = self.window.add_rectangle(LINE_WIDTH, 1.0);
-        let mut to_target = TargetNode::new(&mut self.window);
-        //let mut to_target = self.window.add_planar_group();
+        let to_target = TargetNode::new(&mut self.window);
 
         accel.set_color(1.0, 0.0, 0.0);
         velocity.set_color(0.0, 0.0, 1.0);

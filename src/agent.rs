@@ -48,6 +48,7 @@ pub struct Kinematics {
 
 impl Agent {
     pub fn run(&self, connection_handle: &mut ConnectionHandle, _grid: Arc<Grid>) {
+        info!("Starting agent");
         let mut agents = HashMap::new();
         let mut missions = HashMap::new();
         loop {
@@ -61,16 +62,17 @@ impl Agent {
                             }
                         }
                         Message::Agent(agent_message) => {
+                            debug!("Updating info from agent {}", agent_message.id);
                             agents.insert(agent_message.id, agent_message);
                         }
                     },
                     Err(err) => match err {
                         std::sync::mpsc::RecvTimeoutError::Timeout => {
-                            debug!("Agent {}'s rx channel timed out", self.id);
+                            debug!("Rx channel timed out");
                             break;
                         }
                         std::sync::mpsc::RecvTimeoutError::Disconnected => {
-                            error!("Agent {} could not retrieve message fmor channel", self.id)
+                            error!("Could not retrieve message from channel")
                         }
                     },
                 }
@@ -83,35 +85,36 @@ impl Agent {
                 let dt = 1.0;
                 let a = (2.0 / dt * (mission.target - k.p) - k.v) / dt;
                 k.a = a / 20.0;
-                debug!("Agent {}'s target is at {}", self.id, mission.target);
-                debug!("Agent {}'s new acceleration is: {}", self.id, k.a);
+                debug!("New target is at {}", mission.target);
+                debug!("New acceleration is: {}", k.a);
                 *self.kinematics.write().unwrap() = k;
             } else {
                 *self.kinematics.write().unwrap().a = *Vector2::zeros();
-                debug!(
-                    "Agent {}'s new acceleration is null, because it has no associated mission",
-                    self.id
-                );
+                debug!("New acceleration is null, because it has no associated mission",);
             }
 
-            connection_handle
-                .tx
-                .send(AgentMessage {
-                    id: self.id,
-                    kinematics: self.kinematics.read().unwrap().clone(),
-                    mission: self.mission.read().unwrap().clone(),
-                })
-                .unwrap();
+            let our_state = self.state();
+            debug!("Sending new state {:?}", our_state);
+            connection_handle.tx.send(our_state).unwrap();
 
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn state(&self) -> AgentMessage {
+        AgentMessage {
+            id: self.id,
+            kinematics: self.kinematics.read().unwrap().clone(),
+            mission: self.mission.read().unwrap().clone(),
         }
     }
 
     fn handle_mission(
         &self,
         mission_message: &MissionMessage,
-        agents: &HashMap<usize, AgentMessage>,
+        _agents: &HashMap<usize, AgentMessage>,
     ) {
+        debug!("Received new mission: {:?}", mission_message);
         let mut best_dist = std::f32::MAX;
         let mut best_mission = None;
         let p = self.kinematics.read().unwrap().p;
@@ -123,20 +126,33 @@ impl Agent {
             }
         }
 
+        match &*self.mission.read().unwrap() {
+            Some(m) => {
+                let current_mission_cost = (m.target - p).norm_squared();
+                if current_mission_cost < best_dist {
+                    debug!("Current mission is closer than any other mission: not changing");
+
+                    return;
+                }
+            }
+            None => {}
+        }
+
         match &best_mission {
             Some(best_mission) => {
-                debug!("Agent {} chose mission {}", self.id, best_mission);
+                debug!("Chose mission {}", best_mission);
             }
             None => {
-                debug!("Agent {} has no mission", self.id);
+                debug!("Has no mission");
             }
         }
         *self.mission.write().unwrap() = best_mission;
+        debug!("Chosen mission {:?}", self.mission.read());
     }
 
     fn check_missions(
         &self,
-        connection_handle: &mut ConnectionHandle,
+        _connection_handle: &mut ConnectionHandle,
         missions: &HashMap<usize, Mission>,
         agents: &mut HashMap<usize, AgentMessage>,
     ) {
@@ -160,8 +176,8 @@ impl Agent {
                                 (missions[&m.id].target - a.kinematics.p).norm_squared();
                             let my_cost = (missions[&m.id].target - k.p).norm_squared();
                             debug!(
-                                "Agents {} (cost {}) and {} (cost {}) work on the same mission {}",
-                                self.id, my_cost, a.id, other_cost, m.id
+                                "Agent {} (cost {}) works on the same mission ({}) as us (our cost {})",
+                                a.id, other_cost, m.id , my_cost,
                             );
                             reassign = my_cost > other_cost;
                             break;
@@ -171,6 +187,7 @@ impl Agent {
                 }
             }
 
+            debug!("Is looking for a new mission: {}", reassign);
             if reassign {
                 let mut best_score = std::f32::MAX;
                 let mut best_mission = None;
@@ -187,11 +204,10 @@ impl Agent {
                 }
 
                 match &best_mission {
-                    Some(bm) => debug!("Agent {} reassigned itself to {}", self.id, bm),
-                    None => debug!("Agent {} reassigned itself to no mission", self.id),
+                    Some(bm) => debug!("Reassigned itself to {}", bm),
+                    None => debug!("Did not reassign itself"),
                 };
                 *self.mission.write().unwrap() = best_mission.clone();
-                agents.get_mut(&self.id).unwrap().mission = best_mission;
             }
         }
     }

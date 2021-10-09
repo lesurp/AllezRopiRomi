@@ -1,16 +1,18 @@
 use crate::agent::{Agent, Cell, Grid, Kinematics};
 use crate::consts::*;
-use std::time::Duration;
-use log::*;
 use crate::missions::Mission;
 use kiss3d::event::Action;
+use kiss3d::text::Font;
 use kiss3d::{scene::PlanarSceneNode, window::Window};
-use nalgebra::{Matrix2x1, Point2, Translation2, UnitComplex};
+use log::*;
+use nalgebra::{Matrix2x1, Point2, Point3, Translation2, UnitComplex, Vector2};
 use std::collections::HashMap;
 use std::f32::consts::FRAC_1_SQRT_2;
 use std::f32::consts::FRAC_PI_2;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 
 struct TargetNode {
     target_cross: PlanarSceneNode,
@@ -47,6 +49,7 @@ pub struct Renderer {
     agent_nodes: HashMap<usize, AgentNode>,
     agents: Mutex<Vec<Arc<Agent>>>,
     config: Mutex<RendererConfig>,
+    font: Rc<kiss3d::text::Font>,
 }
 
 impl Renderer {
@@ -82,6 +85,7 @@ impl Renderer {
             config,
             agent_nodes: HashMap::new(),
             agents: Mutex::new(Vec::new()),
+            font: Font::default(),
         }
     }
 
@@ -112,13 +116,18 @@ impl Renderer {
                             &mission,
                             &self.config.lock().unwrap(),
                         )
-                    }
-                    else {
+                    } else {
                         debug!("Agent has no mission ?");
                     }
+                    self.window.draw_text(
+                        &agent.id.to_string(),
+                        &(Point2::origin() + Vector2::new(kinematics.p.x, -kinematics.p.y)),
+                        10.0,
+                        &self.font,
+                        &Point3::new(1.0, 0.0, 0.0),
+                    )
                 }
             }
-            std::thread::sleep(Duration::from_millis(100));
         }
     }
 

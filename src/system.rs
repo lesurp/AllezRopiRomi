@@ -23,15 +23,16 @@ impl SystemManager {
 
     pub fn add_agent(&mut self, kinematics: Kinematics) -> (Agent, ConnectionHandle) {
         let connection_handle = self.connection_manager.create_new_handle();
-        self.id_counter += 1;
-        (
+        let out = (
             Agent {
                 id: self.id_counter,
                 kinematics: RwLock::new(kinematics),
                 mission: RwLock::new(None),
             },
             connection_handle,
-        )
+        );
+        self.id_counter += 1;
+        out
     }
 
     pub fn run(mut self) -> ! {
@@ -53,6 +54,7 @@ impl SystemManager {
                     Ok(agent_message) => {
                         for (i, tx) in self.connection_manager.txs.iter().enumerate() {
                             if i != agent_message.id {
+                                debug!("Sending message from {} to {}", agent_message.id, i);
                                 tx.send(Message::Agent(agent_message.clone())).unwrap();
                             }
                         }

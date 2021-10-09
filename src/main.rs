@@ -7,11 +7,11 @@ mod system;
 
 use std::sync::Arc;
 
-use system::SystemManager;
 use agent::{Cell, Grid, Kinematics};
 use consts::*;
 use nalgebra::Vector2;
 use renderer::Renderer;
+use system::SystemManager;
 
 fn init_grid() -> Grid {
     let height = GRID_SPLIT as usize;
@@ -35,7 +35,6 @@ fn init_agent_kinematics() -> Vec<Kinematics> {
     let mut out = Vec::new();
     for i in 0..2 {
         for j in 0..2 {
-            let id = i * 2 + j;
             let kinematics = Kinematics {
                 v: Vector2::zeros(),
                 a: Vector2::zeros(),
@@ -53,7 +52,11 @@ fn init_agent_kinematics() -> Vec<Kinematics> {
 }
 
 fn main() {
-    env_logger::init();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_thread_ids(true)
+        .with_thread_names(true)
+        .init();
     let grid = Arc::new(init_grid());
     let mut renderer = Renderer::new(&grid);
     let agent_kinematics = init_agent_kinematics();
@@ -67,17 +70,23 @@ fn main() {
         connection_handlers.push(ch);
     });
 
-    let mut m = motion::MotionSimulator::new();
+    let mut m = motion::MotionSimulator::<false>::new();
 
     for agent in agents.iter() {
         renderer.add_agent(Arc::clone(agent));
         m.add_agent(Arc::clone(agent));
     }
 
-    let _system_thread = std::thread::spawn(move || system.run());
-    for (a, mut ch) in agents.into_iter().zip(connection_handlers) {
+    let _system_thread = std::thread::Builder::new()
+        .name("SystemManager".to_owned())
+        .spawn(move || system.run())
+        .unwrap();
+    for (i, (a, mut ch)) in agents.into_iter().zip(connection_handlers).enumerate() {
         let g = Arc::clone(&grid);
-        std::thread::spawn(move || a.run(&mut ch, g));
+        std::thread::Builder::new()
+            .name(format!("Agent {}", i))
+            .spawn(move || a.run(&mut ch, g))
+            .unwrap();
     }
     renderer.run();
 

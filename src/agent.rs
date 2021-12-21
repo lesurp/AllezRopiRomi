@@ -3,12 +3,11 @@ use crate::system::*;
 use log::*;
 use nalgebra::Vector2;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::sync::RwLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub enum Message {
     Mission(MissionMessage),
+    MissionFinished(usize),
     Agent(AgentMessage),
 }
 
@@ -21,8 +20,8 @@ pub struct AgentMessage {
 
 pub struct Agent {
     pub id: usize,
-    pub kinematics: RwLock<Kinematics>,
-    pub mission: RwLock<Option<Mission>>,
+    pub kinematics: Kinematics,
+    pub mission: Option<Mission>,
 }
 
 pub struct Grid {
@@ -47,23 +46,47 @@ pub struct Kinematics {
 }
 
 impl Agent {
-    pub fn run(&self, connection_handle: &mut ConnectionHandle, _grid: Arc<Grid>) {
+    pub fn simulate_motion(&mut self, old: Instant) -> (Instant, f32) {
+        let friction = (0.8f32).ln();
+        let now = Instant::now();
+        let dt = (now - old).as_secs_f32();
+        debug!("wat: {}", (dt / friction).exp());
+        let k = &mut self.kinematics;
+        k.p += dt * (k.v + dt * k.a / 2.0);
+        k.v = dt * k.a + (dt * friction).exp() * k.v;
+        (now, dt)
+    }
+
+    pub fn run(&mut self, connection_handle: &mut ConnectionHandle, _grid: &Grid) {
         info!("Starting agent");
         let mut agents = HashMap::new();
         let mut missions = HashMap::new();
+        let mut now = Instant::now();
         loop {
+            let (new_now, dt) = self.simulate_motion(now);
+            now = new_now;
             loop {
                 match connection_handle.rx.recv_timeout(Duration::from_millis(10)) {
                     Ok(message) => match message {
                         Message::Mission(mission_message) => {
-                            self.handle_mission(&mission_message, &agents);
+                            debug!("Received new mission: {:?}", mission_message);
                             for m in mission_message.0 {
                                 missions.insert(m.id, m);
                             }
+                            self.get_new_mission(&missions, &agents);
                         }
                         Message::Agent(agent_message) => {
                             debug!("Updating info from agent {}", agent_message.id);
                             agents.insert(agent_message.id, agent_message);
+                        }
+                        Message::MissionFinished(mission_id) => {
+                            if let Some(mission) = &self.mission {
+                                if mission.id == mission_id {
+                                    self.mission = None;
+                                    self.get_new_mission(&missions, &agents);
+                                }
+                            }
+                            missions.remove(&mission_id);
                         }
                     },
                     Err(err) => match err {
@@ -80,45 +103,57 @@ impl Agent {
 
             self.check_missions(connection_handle, &missions, &mut agents);
 
-            if let Some(mission) = self.mission.read().unwrap().clone() {
-                let mut k = self.kinematics.read().unwrap().clone();
-                let dt = 1.0;
-                let a = (2.0 / dt * (mission.target - k.p) - k.v) / dt;
-                k.a = a / 20.0;
-                debug!("New target is at {}", mission.target);
-                debug!("New acceleration is: {}", k.a);
-                *self.kinematics.write().unwrap() = k;
+            debug!("Current mission: {:?}", self.mission);
+            if let Some(mission) = &self.mission {
+                let k = &mut self.kinematics;
+                let m = mission.target - k.p;
+                let mut ppart = (2.0 / dt) * (m / dt);
+                if ppart.norm() > 2.0 * 100.0 {
+                    ppart *= 2.0 * 100.0 / ppart.norm();
+                }
+                let mut vpart = -(2.0 / dt) * k.v;
+                if vpart.norm() > 100.0 {
+                    vpart *= 100.0 / vpart.norm();
+                }
+                let a = ppart + vpart;
+                k.a = if a.norm() > 100.0 {
+                    a * 100.0 / a.norm()
+                } else {
+                    a
+                };
+                debug!("dt:\t{}", dt);
+                debug!("target:\t{}", mission.target);
+                debug!("Acceleration:\t{}", k.a);
+                debug!("Position:\t{}", k.p);
+                debug!("Velocity:\t{}", k.v);
             } else {
-                *self.kinematics.write().unwrap().a = *Vector2::zeros();
+                self.kinematics.a = Vector2::zeros();
                 debug!("New acceleration is null, because it has no associated mission",);
             }
 
             let our_state = self.state();
             debug!("Sending new state {:?}", our_state);
             connection_handle.tx.send(our_state).unwrap();
-
-            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
     fn state(&self) -> AgentMessage {
         AgentMessage {
             id: self.id,
-            kinematics: self.kinematics.read().unwrap().clone(),
-            mission: self.mission.read().unwrap().clone(),
+            kinematics: self.kinematics.clone(),
+            mission: self.mission.clone(),
         }
     }
 
-    fn handle_mission(
-        &self,
-        mission_message: &MissionMessage,
+    fn get_new_mission(
+        &mut self,
+        missions: &HashMap<usize, Mission>,
         _agents: &HashMap<usize, AgentMessage>,
     ) {
-        debug!("Received new mission: {:?}", mission_message);
         let mut best_dist = std::f32::MAX;
         let mut best_mission = None;
-        let p = self.kinematics.read().unwrap().p;
-        for mission in &mission_message.0 {
+        let p = self.kinematics.p;
+        for mission in missions.values() {
             let n = (p - mission.target).norm_squared();
             if n < best_dist {
                 best_dist = n;
@@ -126,7 +161,7 @@ impl Agent {
             }
         }
 
-        match &*self.mission.read().unwrap() {
+        match &self.mission {
             Some(m) => {
                 let current_mission_cost = (m.target - p).norm_squared();
                 if current_mission_cost < best_dist {
@@ -146,23 +181,19 @@ impl Agent {
                 debug!("Has no mission");
             }
         }
-        *self.mission.write().unwrap() = best_mission;
-        debug!("Chosen mission {:?}", self.mission.read());
+        self.mission = best_mission;
+        debug!("Chosen mission {:?}", self.mission);
     }
 
     fn check_missions(
-        &self,
+        &mut self,
         _connection_handle: &mut ConnectionHandle,
         missions: &HashMap<usize, Mission>,
         agents: &mut HashMap<usize, AgentMessage>,
     ) {
-        let k = self.kinematics.read().unwrap().clone();
+        let k = &self.kinematics;
         let mut assigned_missions = HashSet::new();
-        let g = self.mission.read().unwrap();
-        let m = g.clone();
-        drop(g); // TODO: is there a better way to enforce the lock dtor?
-                 // e.g. some getter function? this is *very* bug-prone :(
-        if let Some(curr_m) = m {
+        if let Some(curr_m) = &self.mission {
             let mut reassign = false;
             for (_, a) in agents.iter_mut() {
                 if a.id == self.id {
@@ -207,7 +238,7 @@ impl Agent {
                     Some(bm) => debug!("Reassigned itself to {}", bm),
                     None => debug!("Did not reassign itself"),
                 };
-                *self.mission.write().unwrap() = best_mission.clone();
+                self.mission = best_mission;
             }
         }
     }

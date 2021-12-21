@@ -1,7 +1,6 @@
 mod agent;
 mod consts;
 mod missions;
-mod motion;
 mod renderer;
 mod system;
 
@@ -11,6 +10,7 @@ use agent::{Cell, Grid, Kinematics};
 use consts::*;
 use nalgebra::Vector2;
 use renderer::Renderer;
+use std::sync::mpsc::channel;
 use system::SystemManager;
 
 fn init_grid() -> Grid {
@@ -53,42 +53,34 @@ fn init_agent_kinematics() -> Vec<Kinematics> {
 
 fn main() {
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_max_level(tracing::Level::DEBUG)
         .with_thread_ids(true)
         .with_thread_names(true)
         .init();
     let grid = Arc::new(init_grid());
-    let mut renderer = Renderer::new(&grid);
     let agent_kinematics = init_agent_kinematics();
 
-    let mut system = SystemManager::new();
+    let (renderer_tx, rendered_rx) = channel();
+    let renderer = Renderer::new(&grid, rendered_rx);
+    let mut system = SystemManager::new(renderer_tx);
     let mut agents = Vec::new();
     let mut connection_handlers = Vec::new();
     agent_kinematics.into_iter().for_each(|agent_kinematic| {
         let (a, ch) = system.add_agent(agent_kinematic);
-        agents.push(Arc::new(a));
+        agents.push(a);
         connection_handlers.push(ch);
     });
-
-    let mut m = motion::MotionSimulator::<false>::new();
-
-    for agent in agents.iter() {
-        renderer.add_agent(Arc::clone(agent));
-        m.add_agent(Arc::clone(agent));
-    }
 
     let _system_thread = std::thread::Builder::new()
         .name("SystemManager".to_owned())
         .spawn(move || system.run())
         .unwrap();
-    for (i, (a, mut ch)) in agents.into_iter().zip(connection_handlers).enumerate() {
-        let g = Arc::clone(&grid);
+    for (i, (mut a, mut ch)) in agents.into_iter().zip(connection_handlers).enumerate() {
+        let grid = grid.clone();
         std::thread::Builder::new()
             .name(format!("Agent {}", i))
-            .spawn(move || a.run(&mut ch, g))
+            .spawn(move || a.run(&mut ch, &grid))
             .unwrap();
     }
     renderer.run();
-
-    m.stop();
 }

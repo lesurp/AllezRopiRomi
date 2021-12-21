@@ -2,22 +2,22 @@ use crate::agent::{Agent, AgentMessage, Kinematics, Message};
 use crate::missions::*;
 use log::*;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::RwLock;
-use std::thread::sleep;
 use std::time::Duration;
 
 pub struct SystemManager {
     connection_manager: ConnectionManager,
     mission_manager: MissionManager,
+    rendered_tx: Sender<AgentMessage>,
     id_counter: usize,
 }
 
 impl SystemManager {
-    pub fn new() -> Self {
+    pub fn new(rendered_tx: Sender<AgentMessage>) -> Self {
         SystemManager {
             connection_manager: ConnectionManager::new(),
             mission_manager: MissionManager::new(),
             id_counter: 0,
+            rendered_tx,
         }
     }
 
@@ -26,8 +26,8 @@ impl SystemManager {
         let out = (
             Agent {
                 id: self.id_counter,
-                kinematics: RwLock::new(kinematics),
-                mission: RwLock::new(None),
+                kinematics,
+                mission: None,
             },
             connection_handle,
         );
@@ -35,7 +35,7 @@ impl SystemManager {
         out
     }
 
-    pub fn run(mut self) -> ! {
+    pub fn run(mut self) {
         loop {
             let number_missions_left = self.mission_manager.number_missions_left();
             debug!("Missions left in the pool: {}", number_missions_left);
@@ -52,12 +52,17 @@ impl SystemManager {
                     .recv_timeout(Duration::from_millis(10))
                 {
                     Ok(agent_message) => {
+                        let to_cancel = self.mission_manager.mission_to_finish(&agent_message);
                         for (i, tx) in self.connection_manager.txs.iter().enumerate() {
                             if i != agent_message.id {
                                 debug!("Sending message from {} to {}", agent_message.id, i);
                                 tx.send(Message::Agent(agent_message.clone())).unwrap();
                             }
+                            if let Some(mission_id) = to_cancel {
+                                tx.send(Message::MissionFinished(mission_id)).unwrap();
+                            }
                         }
+                        self.rendered_tx.send(agent_message).unwrap();
                     }
                     Err(e) => match e {
                         std::sync::mpsc::RecvTimeoutError::Timeout => break,
@@ -65,8 +70,6 @@ impl SystemManager {
                     },
                 }
             }
-
-            sleep(Duration::from_millis(10));
         }
     }
 }

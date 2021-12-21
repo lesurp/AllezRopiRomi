@@ -1,4 +1,5 @@
-use crate::consts::{AGENT_RADIUS, CELL_SIZE, GRID_HALF_SIZE, GRID_SIZE};
+use crate::agent::AgentMessage;
+use crate::consts::{AGENT_RADIUS, CELL_SIZE, DISTANCE_TO_TARGET, GRID_HALF_SIZE};
 use log::*;
 use nalgebra::Vector2;
 use rand::distributions::{Distribution, Uniform};
@@ -17,8 +18,9 @@ impl MissionManager {
         MissionManager {
             missions: HashMap::new(),
             id_counter: 0,
-            between: Uniform::from(
-                CELL_SIZE + AGENT_RADIUS / 2.0..GRID_SIZE - AGENT_RADIUS / 2.0 - CELL_SIZE,
+            between: Uniform::new(
+                CELL_SIZE + AGENT_RADIUS - GRID_HALF_SIZE,
+                GRID_HALF_SIZE - CELL_SIZE - AGENT_RADIUS,
             ),
             rng: rand_pcg::Pcg64::new(0, 0),
         }
@@ -31,8 +33,8 @@ impl MissionManager {
                 id: self.id_counter,
                 agent: None,
                 target: Vector2::new(
-                    self.between.sample(&mut self.rng) - GRID_HALF_SIZE,
-                    self.between.sample(&mut self.rng) - GRID_HALF_SIZE,
+                    self.between.sample(&mut self.rng),
+                    self.between.sample(&mut self.rng),
                 ),
             };
             info!(
@@ -52,6 +54,16 @@ impl MissionManager {
 
     pub fn number_missions_left(&self) -> usize {
         self.missions.len()
+    }
+
+    pub fn mission_to_finish(&mut self, agent_message: &AgentMessage) -> Option<usize> {
+        let mission = agent_message.mission.as_ref()?;
+        if (agent_message.kinematics.p - mission.target).norm() < DISTANCE_TO_TARGET {
+            self.finish_mission(mission.id);
+            Some(mission.id)
+        } else {
+            None
+        }
     }
 }
 

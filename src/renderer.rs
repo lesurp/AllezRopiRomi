@@ -1,17 +1,17 @@
-use crate::agent::{Agent, Cell, Grid, Kinematics};
+use crate::agent::{AgentMessage, Cell, Grid, Kinematics};
 use crate::consts::*;
 use crate::missions::Mission;
 use kiss3d::event::Action;
 use kiss3d::text::Font;
 use kiss3d::{scene::PlanarSceneNode, window::Window};
-use log::*;
 use nalgebra::{Matrix2x1, Point2, Point3, Translation2, UnitComplex, Vector2};
 use std::collections::HashMap;
 use std::f32::consts::FRAC_1_SQRT_2;
 use std::f32::consts::FRAC_PI_2;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::sync::Mutex;
+use std::time::Duration;
 
 struct TargetNode {
     target_cross: PlanarSceneNode,
@@ -46,13 +46,13 @@ struct RendererConfig {
 pub struct Renderer {
     window: Window,
     agent_nodes: HashMap<usize, AgentNode>,
-    agents: Mutex<Vec<Arc<Agent>>>,
     config: Mutex<RendererConfig>,
     font: Rc<kiss3d::text::Font>,
+    rx: Receiver<AgentMessage>,
 }
 
 impl Renderer {
-    pub fn new(grid: &Grid) -> Self {
+    pub fn new(grid: &Grid, rx: Receiver<AgentMessage>) -> Self {
         let mut window = Window::new("Allez Opi, Omi !");
         for (k, cell) in grid.cells.iter().enumerate() {
             let col = k % grid.width;
@@ -83,8 +83,8 @@ impl Renderer {
             window,
             config,
             agent_nodes: HashMap::new(),
-            agents: Mutex::new(Vec::new()),
             font: Font::default(),
+            rx,
         }
     }
 
@@ -94,40 +94,54 @@ impl Renderer {
     }
 
     pub fn run(mut self) {
-        while self.window.render() {
-            for mut event in self.window.events().iter() {
-                if let kiss3d::event::WindowEvent::Key(button, Action::Press, _) = event.value {
-                    event.inhibited = true;
-                    match button {
-                        kiss3d::event::Key::A => todo!(), // accel
-                        kiss3d::event::Key::T => self.toggle_target(),
-                        kiss3d::event::Key::V => todo!(), // velocity
-                        _ => event.inhibited = false,
-                    }
+        while self.render_one() {}
+    }
+
+    pub fn render_one(&mut self) -> bool {
+        for mut event in self.window.events().iter() {
+            if let kiss3d::event::WindowEvent::Key(button, Action::Press, _) = event.value {
+                event.inhibited = true;
+                match button {
+                    kiss3d::event::Key::A => todo!(), // accel
+                    kiss3d::event::Key::T => self.toggle_target(),
+                    kiss3d::event::Key::V => todo!(), // velocity
+                    _ => event.inhibited = false,
                 }
             }
-            for agent in self.agents.lock().unwrap().iter() {
-                if let Ok(kinematics) = agent.kinematics.try_read() {
-                    if let Ok(mission) = agent.mission.try_read() {
-                        Renderer::update_agent(
-                            self.agent_nodes.get_mut(&agent.id).unwrap(),
-                            &kinematics,
-                            &mission,
-                            &self.config.lock().unwrap(),
-                        )
-                    } else {
-                        debug!("Agent has no mission ?");
+        }
+        loop {
+            match self.rx.recv_timeout(Duration::from_millis(0)) {
+                Ok(agent_message) => {
+                    match self.agent_nodes.get_mut(&agent_message.id) {
+                        Some(node) => {
+                            Renderer::update_agent(
+                                node,
+                                &agent_message.kinematics,
+                                &agent_message.mission,
+                                &self.config.lock().unwrap(),
+                            );
+                        }
+                        None => self.add_agent(&agent_message),
                     }
                     self.window.draw_text(
-                        &agent.id.to_string(),
-                        &(Point2::origin() + Vector2::new(kinematics.p.x, -kinematics.p.y)),
+                        &agent_message.id.to_string(),
+                        &(Point2::origin()
+                            + Vector2::new(
+                                agent_message.kinematics.p.x,
+                                -agent_message.kinematics.p.y,
+                            )),
                         10.0,
                         &self.font,
                         &Point3::new(1.0, 0.0, 0.0),
                     )
                 }
+                Err(e) => match e {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => break,
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => {}
+                },
             }
         }
+        self.window.render()
     }
 
     fn update_agent(
@@ -164,11 +178,11 @@ impl Renderer {
             agent_node
                 .to_target
                 .target_line
-                .set_visible(true && config.with_target);
+                .set_visible(config.with_target);
             agent_node
                 .to_target
                 .target_cross
-                .set_visible(true && config.with_target);
+                .set_visible(config.with_target);
         } else {
             agent_node.to_target.target_line.set_visible(false);
             agent_node.to_target.target_cross.set_visible(false);
@@ -200,7 +214,7 @@ impl Renderer {
         agent_node.accel.set_local_scale(1.0, kinematics.a.norm());
     }
 
-    pub fn add_agent(&mut self, agent: Arc<Agent>) {
+    pub fn add_agent(&mut self, agent_message: &AgentMessage) {
         let mut main = self.window.add_planar_group();
 
         let mut main_radius_out = main.add_circle(AGENT_RADIUS);
@@ -231,11 +245,13 @@ impl Renderer {
         };
         Renderer::update_agent(
             &mut agent_node,
-            &agent.kinematics.read().unwrap(),
+            &agent_message.kinematics,
             &None,
             &self.config.lock().unwrap(),
         );
-        assert!(self.agent_nodes.insert(agent.id, agent_node).is_none());
-        self.agents.lock().unwrap().push(agent);
+        assert!(self
+            .agent_nodes
+            .insert(agent_message.id, agent_node)
+            .is_none());
     }
 }

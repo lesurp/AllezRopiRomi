@@ -203,15 +203,24 @@ impl Agent {
                     Some(m) => {
                         assigned_missions.insert(m.id);
                         if m.id == curr_m.id {
-                            let other_cost =
-                                (missions[&m.id].target - a.kinematics.p).norm_squared();
-                            let my_cost = (missions[&m.id].target - k.p).norm_squared();
-                            debug!(
+                            match missions.get(&m.id) {
+                                Some(other_mission) => {
+                                    let other_cost =
+                                        (other_mission.target - a.kinematics.p).norm_squared();
+                                    let my_cost = (missions[&m.id].target - k.p).norm_squared();
+                                    debug!(
                                 "Agent {} (cost {}) works on the same mission ({}) as us (our cost {})",
                                 a.id, other_cost, m.id , my_cost,
                             );
-                            reassign = my_cost > other_cost;
-                            break;
+                                    reassign = my_cost > other_cost;
+                                    break;
+                                }
+                                None => warn!(
+                                    "Agent {} appears to still be working on mission {}",
+                                    a.id,
+                                    m.id
+                                ),
+                            }
                         }
                     }
                     None => {}
